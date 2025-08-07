@@ -1,0 +1,337 @@
+#!/usr/bin/env python3
+
+import argparse
+import sys
+import os
+import re
+import time
+from pathlib import Path
+
+DEBUG = False
+
+def debug(*args):
+    if DEBUG:
+        print(*args)
+
+try:
+    from posh import sh
+except ModuleNotFoundError:
+    print('Run: \n  pip3 install py-posh')
+    sys.exit(1)
+
+script_dir = os.path.dirname(os.path.realpath(__file__))
+##config_path = Path(script_dir, 'vim-config')
+##
+##mount_path = sh.env['HOME']
+##internal_mount_path = '/home/vim'
+##
+##def normalize_path(path):
+##    """Take a path in host, and return a path in the docker container"""
+##    path = Path(path).resolve()
+##    if not path.is_relative_to(mount_path):
+##        raise ValueError("Path "+str(path)+" not mounted in the docker container")
+##    return Path(internal_mount_path, path.relative_to(mount_path))
+
+def test_ssh(user=None, host='localhost'):
+    if not user:
+        user = sh.env.get("USER")
+    sshhost = '@'.join([user, host])
+
+    sh.null().ssh('-o', 'PasswordAuthentication=no', sshhost, 'true')
+    if not sh:
+        attempt = input(f"Can't ssh to {sshhost}. Try copying an id? (y/N) ")
+        if attempt != 'y':
+            print('Your ssh keys aren\'t setup properly. Run these commands to get setup:'
+                '\n  ssh-keygen -t rsa -f ~/.ssh/id_rsa -N \'\''
+                '\n  ssh-copy-id $USER@localhost')
+            raise ValueError("Unable to connect to host")
+
+        sh['ssh-copy-id'](sshhost)
+        sh.null().ssh('-o', 'PasswordAuthentication=no', sshhost, 'true')
+        if not sh:
+            raise ValueError("This isnt working")
+
+def start_vim_docker(args):
+    if session_exists(args.name):
+        raise ValueError("Docker container is alreay running")
+
+    # Ensure we can ssh into local user (needed locally as well)
+    test_ssh()
+
+    docker_args = [
+            'run', 
+            '-d']
+
+    debug("Passed in docker args:")
+    for arg in args.docker:
+        debug("  "+arg)
+        docker_args.append(arg)
+    docker_args += [
+            '--device', '/dev/fuse', '--privileged',
+            '-v', f'{Path("~", ".ssh").expanduser()}:/shim/sshorig:ro',
+            '--rm',
+            '--name', args.name,
+            'shim']
+
+    debug("Full list:")
+    [debug("  "+arg) for arg in docker_args]
+
+    sh.docker(*docker_args)
+#
+##def vim_docker(name, user, host, path):
+##    # Check if docker container is already running
+##    if vim_is_running(name):
+##        raise ValueError("Docker container is alreay running")
+##    
+##    # Ensure we can ssh into local user
+##    test_ssh(user, host)
+##
+##    # you can set cwd your self :p
+##    #try:
+##    #    change_cwd = f" -c 'cd {str(normalize_path(cwd))}'"
+##    #except ValueError:
+##    #    change_cwd = ''
+##    #
+##    #print('here')
+##
+##    if host == 'localhost':
+##        host = 'host.docker.internal'
+##
+##    ssh_path = Path("~/.ssh").expanduser()
+##    sh.docker(
+##            'run', '-it', '--rm', 
+##            '-v', f'{ssh_path}:/ssh',
+##            '-e', f'SSHHOST={host}',
+##            '-e', f'SSHUSER={user}',
+##            '-e', f'SSHPATH={path}',
+##            '-v', path+':'+internal_mount_path,
+##            '--privileged',
+##            '--add-host', 'host.docker.internal:host-gateway',
+##            '--name', 'gggg',
+##            'vim', 'bash')
+##    
+##    #vim_cmd = "echo \'\n\' |" # Send enter to vim script to not get stuck
+##    #vim_cmd += "SHELL=/usr/bin/ssh-bash" # Make :term open a shell on host via script
+##    #vim_cmd += " /vim/bin/vim"
+###   # vim_cmd += change_cwd
+##    #vim_cmd += " --headless" # Start vim without ui
+##    #vim_cmd += " --listen /tmp/nvimsocket" # Setup socket for us to tell vim to open files
+##    #
+##    ## To support changing uid/gid to match the user, we start as root and su into the user vim
+##    #su_cmd = "su"
+##    #su_cmd += " -P" # Use a pty. This fixes resizing issues I had.
+##    #su_cmd += " -s /usr/bin/bash -c \""+vim_cmd+"\""
+##    #su_cmd += " vim" # User to run command as
+###
+###    # Modify uid and gid if necessary
+###    docker_cmd = '' 
+###
+###    uid = sh.var().id('-u').strip()
+###    if uid != '1001':
+###        docker_cmd += 'usermod -u '+uid+' vim &> /dev/null &&'
+###
+###    gid = sh.var().id('-g').strip()
+###    if gid != '1001':
+###        docker_cmd += 'groupmod -g '+gid+' vim &> /dev/null &&'
+###
+###    docker_cmd += su_cmd
+###
+###    docker_args = [
+###            'run', 
+###            '-d',
+###            '--detach-keys="ctrl-@"',
+###            '-v', mount_path+':'+internal_mount_path]
+###    docker_args += ['-v', str(config_path)+':/vim'] if config_path.exists() else [] # This allows us to edit our config without rebuilding the container
+###    docker_args += [
+###            '--add-host', 'host.docker.internal:host-gateway',
+###            '-e', 'LOCAL_USER='+sh.env['USER'],
+###            '--rm',
+###            '--name', name,
+###            'vim',
+###            'bash', '-c', docker_cmd]
+###    sh.docker(*docker_args)
+
+def get_sessions():
+    output = sh.var().docker('ps', '--format', '{{.Image}} {{.Names}}')
+    sessions = []
+    for line in output.splitlines():
+        values = line.split(' ')
+        if values[0] == 'shim':
+            sessions.append(values[1])
+    return sessions
+
+def session_exists(name):
+    """Check if docker container is already running"""
+    return name in get_sessions()
+
+def attach_vim_docker(name):
+    # TODO check if container has started via logs, if it hasn't try again or timeout
+
+    if not session_exists(name):
+        raise ValueError(f"{name} is not running")
+
+    cmd = ''
+
+    # Everything needs to be a special little unicorn, so here is a rainbow turd.
+    cmd += "ps -u | grep remote-ui | grep -v grep | tr -s ' ' | cut -d' ' -f2 | xargs -i bash -c \"echo killing {}; kill {}\"; nvim --server /tmp/nvimsocket --remote-ui"
+
+    sh.docker(
+            'exec', 
+            # This key combo lets us detach from the docker container
+            '--detach-keys=ctrl-^', 
+            '-it',
+            name,
+            'bash', '-c', cmd)
+
+    # The shell can get messed up. Calling reset can fix things up a bit
+    sh.reset()
+
+   
+def start_local(args):
+    # TODO make this a function
+    if not args.name:
+        sessions = get_sessions()
+        name = "local-{}"
+        i = 1
+        while name.format(i) in sessions:
+            i += 1
+        args.name = name.format(i)
+    print(f'Creating new session named {args.name}')
+
+    
+    args.docker.extend(['--add-host', 'host.docker.internal:host-gateway']) # Make local host accessible
+    args.docker.extend(['-e', 'SSHUSER='+sh.env['USER']])                   # Set the user to ssh into
+    args.docker.extend(['-e', 'SSHHOST=host.docker.internal'])              # Address of localhost from docker container
+    args.docker.extend(['-e', 'REMOTE_SHELL='+sh.env['SHELL']])             # Make the container use the same shell as user
+    args.docker.extend(['-e', f'MOUNT_ROOT={Path("~").expanduser()}'])
+
+#        args.docker.extend(['-e', f'SESSION={args.name}'])
+#    
+    for v in args.volume:
+        args.docker.append("-v")
+        args.docker.append(v)
+#
+      # By default mount home dir into container
+#        args.volume.append(f"{sh.env.get('HOME','~')}:/home/vim")
+    start_vim_docker(args)
+    #return attach_vim_docker(args.name)
+
+def build_vim_docker():
+    sh.docker('build', script_dir, '-t', 'shim')
+
+def parse_args():
+    parser = argparse.ArgumentParser("Run dockered SHh'ed vIM") 
+    parser.add_argument("--debug", action="store_true")
+
+    parser.add_argument("-d", '--docker', default=[], action='append', help="Args to pass to docker" )
+
+    subparsers = parser.add_subparsers(dest="command")
+    subparsers.required = True
+
+    build_parser = subparsers.add_parser("build")
+    run_parser = subparsers.add_parser("run")
+    list_parser = subparsers.add_parser("list")
+
+    local_parser = subparsers.add_parser("local")
+    local_parser.add_argument('name', nargs='?')
+    local_parser.add_argument('-v', '--volume', default=[], action='append', help="Mount volume in docker container - host:dest" )
+    local_parser.add_argument('-n', '--new', default=False, action='store_true', help="If no name is specified, create a new session." )
+
+    attach_parser = subparsers.add_parser("attach")
+    attach_parser.add_argument('name', nargs='?')
+
+    kill_parser = subparsers.add_parser("kill")
+    kill_parser.add_argument('name', nargs='?')
+
+    args = parser.parse_args()
+    global DEBUG
+    DEBUG = args.debug
+
+    return args
+
+def main():
+    args = parse_args()
+    debug(args)
+
+    if args.command == "build":
+        return build_vim_docker()
+
+    if args.command == "run":
+        return sh.docker('run', '--rm',
+            '--add-host', 'host.docker.internal:host-gateway',
+             '-e', 'NOVIM=1', 
+            '-e', 'SSHUSER='+sh.env['USER'],
+            '-e', 'SSHHOST=host.docker.internal',
+            '-v', f'{Path("~", ".ssh").expanduser()}:/shim/sshorig:ro',
+
+            '--device', '/dev/fuse', '--privileged',
+
+            '-it', 'shim')
+
+    if args.command == "local":
+        if not args.name and not args.new and 'local-1' in get_sessions():
+            return attach_vim_docker('local-1')
+        return start_local(args)
+
+    if args.command == 'attach':
+        if not args.name:
+            sessions = get_sessions()
+            if not sessions:
+                raise ValueError("No sessions to attach to")
+            if len(sessions) != 1:
+                raise ValueError("No name specified with multiple sessions")
+            args.name = sessions[0]
+        return attach_vim_docker(args.name)
+
+    if args.command == 'list':
+        print('Running sessions')
+        for session in get_sessions():
+            print(f" {session}")
+
+    if args.command == 'kill':
+        if not args.name:
+            sessions = get_sessions()
+            if not sessions:
+                raise ValueError("No sessions to kill")
+            if len(sessions) != 1:
+                raise ValueError("No name specified with multiple sessions")
+            args.name = sessions[0]
+
+        return sh.docker("kill", args.name)
+
+#
+##    if args.ssh:
+##        match = re.match('(?:(.*)@)?([^:]*)(?::(.*))?', args.ssh)
+##        if not match:
+##            raise ValueError("I expect ssh to be in the format '[user@]host[:path]'")
+##        user, host, path = match.groups()
+##        if not user:
+##            user = sh.env.get('USER')
+##        if not path:
+##            path = ''
+##
+##        if args.new:
+##            name = args.new
+##        else:
+##            name = f"{user}{'-' if user else ''}{host}{'-' if path else ''}{path}"
+##
+##
+##        vim_docker(name, user, host, path)
+##
+###    if '--ssh' in sys.argv:
+###        ssh_index = sys.argv.index('--ssh')
+###        if len(sys.argv) <= ssh_index + 1:
+###            raise ValueError("Invalid argument after --ssh")
+###        sshhost = sys.argv[ssh_index + 1]
+###        print(sshhost)
+###
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as err:
+        if DEBUG:
+            raise err
+        else:
+            print(err)
+            sys.exit(1)

@@ -1,0 +1,3 @@
+#!/usr/bin/bash
+#TODO make session a variable
+ssh -i /shim/sshuser/id_rsa -q -o StrictHostKeyChecking=no -t $SSHUSER@$SSHHOST "PATH=\$PATH:/tmp/shim/session $REMOTE_SHELL"
