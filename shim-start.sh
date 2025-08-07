@@ -42,10 +42,12 @@ cp -r /shim/sshorig /shim/sshuser
 chown -R vim:vim /shim/sshuser
 
 
-# Mount the host's dir in the container
+# Mount the host's dir in the container. We try to use MOUNT_ROOT because having different 
+# root paths can cause issues for things like clangd
 echo "Trying to mount share"
-su -c "mkdir -p /home/vim/mount" vim
-su -c "sshfs $SSHUSER@$SSHHOST:$MOUNT_ROOT /home/vim/mount -o IdentityFile=/shim/sshuser/id_rsa,StrictHostKeyChecking=no" vim
+mkdir -p $MOUNT_ROOT
+chown vim:vim $MOUNT_ROOT
+su -c "sshfs $SSHUSER@$SSHHOST:$MOUNT_ROOT $MOUNT_ROOT -o IdentityFile=/shim/sshuser/id_rsa,StrictHostKeyChecking=no" vim
 #echo "HOME=/home/vim/mount" >> /etc/environment
 
 
