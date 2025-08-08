@@ -18,7 +18,7 @@ for arg in sys.argv[1:]:
 
     elif Path(root) in Path(arg).parents:
         path = Path(arg).relative_to(Path(root))
-        path = Path('/home/vim/mount', path)
+        path = Path(root, path)
         print(f"Opening {path}")
         sh.null().nvim('--server', '/tmp/nvimsocket', '--remote', path)
 

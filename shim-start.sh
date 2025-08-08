@@ -76,7 +76,7 @@ scp -i /shim/sshuser/id_rsa -o "StrictHostKeyChecking no" /shim/shim-open.sh $SS
 # start vim command
 vim_cmd=$vim_cmd"SHELL=/shim/ssh-bash" # Make :term open a shell on host via script
 vim_cmd=$vim_cmd" nvim"
-vim_cmd=$vim_cmd" --cmd 'cd /home/vim/mount'" # Start vim without ui
+vim_cmd=$vim_cmd" --cmd 'cd $MOUNT_ROOT'" # Start vim without ui
 vim_cmd=$vim_cmd" --headless" # Start vim without ui
 vim_cmd=$vim_cmd" --listen /tmp/nvimsocket" # Setup socket for us to tell vim to open files
 vim_cmd=$vim_cmd" -u /shim/nvim-config/lua/init.lua" # Setup socket for us to tell vim to open files
